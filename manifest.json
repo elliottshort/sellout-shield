@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "SelloutShield",
+  "version": "0.1.0",
+  "description": "Hides YouTube videos and channel pages associated with private equity owned entities.",
+  "icons": {
+    "16": "assets/icon-16.png",
+    "32": "assets/icon-32.png",
+    "48": "assets/icon-48.png",
+    "128": "assets/icon-128.png"
+  },
+  "permissions": ["storage", "alarms", "scripting"],
+  "host_permissions": ["https://www.youtube.com/*", "https://raw.githubusercontent.com/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "SelloutShield",
+    "default_icon": {
+      "16": "assets/icon-16.png",
+      "32": "assets/icon-32.png",
+      "48": "assets/icon-48.png",
+      "128": "assets/icon-128.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js", "assets/icon.png"],
+      "matches": ["https://www.youtube.com/*"]
+    }
+  ]
+}
+

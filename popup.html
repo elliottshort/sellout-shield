@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SelloutShield</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="card">
+      <header class="header">
+        <div class="brand">
+          <img class="brandIcon" src="assets/icon.png" alt="" />
+          <div class="brandText">
+            <div class="title">SelloutShield</div>
+            <div class="subtitle">Stop Private Equity Owned Channels in their Tracks</div>
+          </div>
+        </div>
+      </header>
+
+      <section class="stats" aria-label="Block list statistics">
+        <div class="stat">
+          <div class="statLabel">Block List</div>
+          <div class="statValue" id="count">—</div>
+        </div>
+        <div class="meta" id="meta" aria-live="polite"></div>
+      </section>
+
+      <section class="actions" aria-label="Actions">
+        <button class="button" id="update" type="button">Check for Updates</button>
+        <div class="status" id="status" aria-live="polite"></div>
+      </section>
+
+      <footer class="footer">
+        <a
+          class="link"
+          id="contribute"
+          href="https://github.com/username/SelloutShield"
+          target="_blank"
+          rel="noreferrer"
+          >Contribute</a
+        >
+      </footer>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
+
+
