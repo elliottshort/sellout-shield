@@ -1,14 +1,8 @@
-# SelloutShield (Chrome Extension, MV3)
+# SelloutShield
 
 <p align="center">
   <img src="assets/logo.png" alt="SelloutShield" width="720" />
 </p>
-
-SelloutShield filters YouTube so videos from certain channels don’t show up, and it blocks channel/watch pages for those channels.
-
-The block list is in this repo: `channels.json`.
-
-## Mission
 
 YouTube is at its best when it’s made by humans with a point of view. Private equity ownership tends to push in the opposite direction: more volume, safer formats, more ad inventory, less craft.
 
