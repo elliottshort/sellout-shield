@@ -1,5 +1,5 @@
 const CONFIG = Object.freeze({
-  repoUrl: "https://github.com/elliottshort/SelloutShield"
+  repoUrl: "https://github.com/elliottshort/sellout-shield"
 });
 
 const byId = (id) => document.getElementById(id);

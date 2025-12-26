@@ -1,6 +1,6 @@
 const CONFIG = Object.freeze({
   sourceUrl:
-    "https://raw.githubusercontent.com/elliottshort/SelloutShield/main/channels.json",
+    "https://raw.githubusercontent.com/elliottshort/sellout-shield/main/channels.json",
   alarmName: "selloutshield:blocklist_refresh",
   alarmPeriodMinutes: 24 * 60,
   mainWorldScriptId: "selloutshield-mainworld-injected-v1",
