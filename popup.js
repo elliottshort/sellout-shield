@@ -1,69 +1,71 @@
-const CONFIG = Object.freeze({
-  repoUrl: "https://github.com/elliottshort/sellout-shield"
+const config = Object.freeze({
+  repoUrl: "https://github.com/elliottshort/sellout-shield",
+  messageTypes: Object.freeze({
+    getStatus: "selloutshield:getStatus",
+    updateBlocklist: "selloutshield:updateBlocklist"
+  })
 });
 
-const byId = (id) => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 
 const setText = (id, value) => {
-  const el = byId(id);
+  const el = $(id);
   if (el) el.textContent = String(value ?? "");
-  return el;
 };
 
-const setDisabled = (id, value) => {
-  const el = byId(id);
-  if (el && "disabled" in el) el.disabled = Boolean(value);
-  return el;
+const setDisabled = (id, disabled) => {
+  const el = $(id);
+  if (el && "disabled" in el) el.disabled = Boolean(disabled);
 };
 
-const sendMessage = (message) =>
-  new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
+const sendMessage = (message) => new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
 
-const toLocalTime = (iso) => {
+const formatLocalTime = (iso) => {
   const date = new Date(String(iso ?? ""));
   return Number.isFinite(date.valueOf()) ? date.toLocaleString() : "";
 };
 
-const render = ({ count, updatedAt, error, status }) => {
+const renderStatus = ({ count, updatedAt, error, statusText }) => {
   setText("count", typeof count === "number" ? String(count) : "—");
 
-  const updated = updatedAt ? `Last updated: ${toLocalTime(updatedAt)}` : "";
-  const meta = [updated, error ? `Error: ${error}` : ""].filter(Boolean).join("\n");
-  setText("meta", meta);
+  const updatedLine = updatedAt ? `Last updated: ${formatLocalTime(updatedAt)}` : "";
+  const errorLine = error ? `Error: ${error}` : "";
+  setText("meta", [updatedLine, errorLine].filter(Boolean).join("\n"));
 
-  setText("status", status ?? "");
+  setText("status", statusText ?? "");
 };
 
 const refresh = async () => {
-  const res = await sendMessage({ type: "selloutshield:getStatus" });
-  render({
+  const res = await sendMessage({ type: config.messageTypes.getStatus });
+  renderStatus({
     count: res?.count ?? 0,
     updatedAt: res?.updatedAt ?? "",
     error: res?.error ?? "",
-    status: ""
+    statusText: ""
   });
 };
 
-const runUpdate = async () => {
+const updateBlocklist = async () => {
   setDisabled("update", true);
-  render({ status: "Checking for updates…" });
-  const res = await sendMessage({ type: "selloutshield:updateBlocklist" });
-  const label = res?.updated ? "Updated block list." : "Block list is up to date.";
-  render({
+  renderStatus({ statusText: "Checking for updates…" });
+
+  const res = await sendMessage({ type: config.messageTypes.updateBlocklist });
+  renderStatus({
     count: res?.count ?? 0,
     updatedAt: res?.updatedAt ?? "",
     error: res?.error ?? "",
-    status: label
+    statusText: res?.updated ? "Updated block list." : "Block list is up to date."
   });
+
   setDisabled("update", false);
 };
 
-const wire = () => {
-  const link = byId("contribute");
-  if (link) link.href = CONFIG.repoUrl;
+const wireUi = () => {
+  const link = $("contribute");
+  if (link) link.href = config.repoUrl;
 
-  const button = byId("update");
-  if (button) button.addEventListener("click", runUpdate);
+  const button = $("update");
+  if (button) button.addEventListener("click", updateBlocklist);
 
   chrome.storage.onChanged.addListener((_changes, areaName) => {
     if (areaName !== "local") return;
@@ -71,7 +73,7 @@ const wire = () => {
   });
 };
 
-wire();
+wireUi();
 refresh();
 
 

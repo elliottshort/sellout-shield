@@ -1,8 +1,6 @@
-const CONFIG = Object.freeze({
-  sourceUrl:
-    "https://raw.githubusercontent.com/elliottshort/sellout-shield/main/channels.json",
-  alarmName: "selloutshield:blocklist_refresh",
-  alarmPeriodMinutes: 24 * 60,
+const config = Object.freeze({
+  remoteBlocklistUrl: "https://raw.githubusercontent.com/elliottshort/sellout-shield/main/channels.json",
+  refreshAlarm: { name: "selloutshield:blocklist_refresh", periodMinutes: 24 * 60, initialDelayMinutes: 1 },
   mainWorldScriptId: "selloutshield-mainworld-injected-v1",
   storageKeys: Object.freeze({
     blockedChannels: "selloutshield:blockedChannels",
@@ -10,136 +8,130 @@ const CONFIG = Object.freeze({
     etag: "selloutshield:blockedChannelsEtag",
     sourceUrl: "selloutshield:blockedChannelsSourceUrl",
     lastError: "selloutshield:blockedChannelsLastError"
+  }),
+  messageTypes: Object.freeze({
+    updateBlocklist: "selloutshield:updateBlocklist",
+    getStatus: "selloutshield:getStatus"
   })
 });
 
 const asArray = (value) => (Array.isArray(value) ? value : []);
 
-const sanitizeChannel = (value) =>
-  value && typeof value === "object"
-    ? {
-        id: typeof value.id === "string" ? value.id.trim() : "",
-        name: typeof value.name === "string" ? value.name.trim() : "",
-        owner: typeof value.owner === "string" ? value.owner.trim() : ""
-      }
-    : { id: "", name: "", owner: "" };
+const toChannel = (value) => {
+  if (!value || typeof value !== "object") return { id: "", name: "", owner: "" };
+  return {
+    id: typeof value.id === "string" ? value.id.trim() : "",
+    name: typeof value.name === "string" ? value.name.trim() : "",
+    owner: typeof value.owner === "string" ? value.owner.trim() : ""
+  };
+};
 
 const parseBlocklist = (json) =>
-  asArray(json?.blockedChannels).map(sanitizeChannel).filter((c) => c.id || c.name);
+  asArray(json?.blockedChannels)
+    .map(toChannel)
+    .filter((c) => Boolean(c.id || c.name));
 
-const getLocal = (keys) =>
-  new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+const storage = Object.freeze({
+  get: (keys) => new Promise((resolve) => chrome.storage.local.get(keys, resolve)),
+  set: (items) => new Promise((resolve) => chrome.storage.local.set(items, resolve))
+});
 
-const setLocal = (items) =>
-  new Promise((resolve) => chrome.storage.local.set(items, resolve));
+const nowIso = () => new Date().toISOString();
 
-const createAlarm = () =>
-  chrome.alarms.create(CONFIG.alarmName, {
-    periodInMinutes: CONFIG.alarmPeriodMinutes,
-    delayInMinutes: 1
+const readState = async () => {
+  const raw = await storage.get([
+    config.storageKeys.etag,
+    config.storageKeys.blockedChannels,
+    config.storageKeys.updatedAt,
+    config.storageKeys.lastError
+  ]);
+  return {
+    etag: typeof raw[config.storageKeys.etag] === "string" ? raw[config.storageKeys.etag] : "",
+    channels: asArray(raw[config.storageKeys.blockedChannels]).map(toChannel),
+    updatedAt: typeof raw[config.storageKeys.updatedAt] === "string" ? raw[config.storageKeys.updatedAt] : "",
+    error: typeof raw[config.storageKeys.lastError] === "string" ? raw[config.storageKeys.lastError] : ""
+  };
+};
+
+const writeState = async ({ channels, updatedAt, etag, sourceUrl, error }) =>
+  storage.set({
+    ...(channels !== undefined ? { [config.storageKeys.blockedChannels]: channels } : {}),
+    ...(updatedAt !== undefined ? { [config.storageKeys.updatedAt]: updatedAt } : {}),
+    ...(etag !== undefined ? { [config.storageKeys.etag]: etag } : {}),
+    ...(sourceUrl !== undefined ? { [config.storageKeys.sourceUrl]: sourceUrl } : {}),
+    ...(error !== undefined ? { [config.storageKeys.lastError]: error } : {})
   });
 
-const fetchJson = async ({ url, etag }) => {
-  const headers = etag ? { "If-None-Match": etag } : {};
+const fetchJsonWithEtag = async ({ url, etag }) => {
+  const headers = etag ? { "If-None-Match": etag } : undefined;
   const response = await fetch(url, { headers, cache: "no-store" });
-  const unchanged = response.status === 304;
-  const ok = response.ok || unchanged;
-  if (!ok) throw new Error(`Blocklist fetch failed (${response.status})`);
-  if (unchanged) return { unchanged: true, etag };
+
+  if (response.status === 304) return { unchanged: true, etag };
+  if (!response.ok) throw new Error(`Blocklist fetch failed (${response.status})`);
+
   const nextEtag = response.headers.get("etag") ?? "";
   const json = await response.json();
   return { unchanged: false, etag: nextEtag, json };
 };
 
-const nowIso = () => new Date().toISOString();
+const loadPackagedBlocklist = async () => {
+  const url = chrome.runtime.getURL("channels.json");
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Packaged channels.json load failed (${response.status})`);
+  const json = await response.json();
+  return { sourceUrl: url, channels: parseBlocklist(json) };
+};
 
-const writeSuccess = async ({ channels, etag, sourceUrl, updatedAt }) =>
-  setLocal({
-    [CONFIG.storageKeys.blockedChannels]: channels,
-    [CONFIG.storageKeys.updatedAt]: updatedAt ?? nowIso(),
-    [CONFIG.storageKeys.etag]: etag ?? "",
-    [CONFIG.storageKeys.sourceUrl]: sourceUrl ?? CONFIG.sourceUrl,
-    [CONFIG.storageKeys.lastError]: ""
-  });
-
-const writeFailure = async ({ error }) =>
-  setLocal({
-    [CONFIG.storageKeys.lastError]: String(error?.message ?? error ?? "Unknown error")
-  });
-
-const readState = async () =>
-  getLocal([
-    CONFIG.storageKeys.etag,
-    CONFIG.storageKeys.blockedChannels,
-    CONFIG.storageKeys.updatedAt,
-    CONFIG.storageKeys.lastError
-  ]);
-
-const updateBlocklist = async ({ force = false } = {}) => {
-  const state = await readState();
-  const etag = typeof state[CONFIG.storageKeys.etag] === "string" ? state[CONFIG.storageKeys.etag] : "";
-  const existing = asArray(state[CONFIG.storageKeys.blockedChannels]).map(sanitizeChannel);
-
-  if (!force && existing.length > 0) {
-    return {
-      updated: false,
-      count: existing.length,
-      updatedAt: state[CONFIG.storageKeys.updatedAt] ?? "",
-      error: state[CONFIG.storageKeys.lastError] ?? ""
-    };
+const updateBlocklist = async ({ forceFetch = false } = {}) => {
+  const current = await readState();
+  if (!forceFetch && current.channels.length > 0) {
+    return { updated: false, count: current.channels.length, updatedAt: current.updatedAt, error: current.error };
   }
 
   try {
-    const result = await fetchJson({ url: CONFIG.sourceUrl, etag });
+    const result = await fetchJsonWithEtag({ url: config.remoteBlocklistUrl, etag: current.etag });
+
     if (result.unchanged) {
       const updatedAt = nowIso();
-      await setLocal({
-        [CONFIG.storageKeys.updatedAt]: updatedAt,
-        [CONFIG.storageKeys.sourceUrl]: CONFIG.sourceUrl,
-        [CONFIG.storageKeys.lastError]: ""
-      });
-      return {
-        updated: false,
-        count: existing.length,
-        updatedAt,
-        error: ""
-      };
+      await writeState({ updatedAt, sourceUrl: config.remoteBlocklistUrl, error: "" });
+      return { updated: false, count: current.channels.length, updatedAt, error: "" };
     }
 
     const updatedAt = nowIso();
     const channels = parseBlocklist(result.json);
-    await writeSuccess({ channels, etag: result.etag, sourceUrl: CONFIG.sourceUrl, updatedAt });
+    await writeState({
+      channels,
+      updatedAt,
+      etag: result.etag,
+      sourceUrl: config.remoteBlocklistUrl,
+      error: ""
+    });
     return { updated: true, count: channels.length, updatedAt, error: "" };
   } catch (error) {
     try {
-      const url = chrome.runtime.getURL("channels.json");
-      const response = await fetch(url, { cache: "no-store" });
-      if (!response.ok) throw new Error(`Packaged channels.json load failed (${response.status})`);
-      const json = await response.json();
+      const packaged = await loadPackagedBlocklist();
       const updatedAt = nowIso();
-      const channels = parseBlocklist(json);
-      await writeSuccess({ channels, etag: "", sourceUrl: url, updatedAt });
-      return { updated: true, count: channels.length, updatedAt, error: "" };
+      await writeState({ channels: packaged.channels, updatedAt, etag: "", sourceUrl: packaged.sourceUrl, error: "" });
+      return { updated: true, count: packaged.channels.length, updatedAt, error: "" };
     } catch (fallbackError) {
-      await writeFailure({ error: fallbackError ?? error });
+      await writeState({ error: String(fallbackError?.message ?? fallbackError ?? error ?? "Unknown error") });
+      return {
+        updated: false,
+        count: current.channels.length,
+        updatedAt: current.updatedAt,
+        error: String(error?.message ?? error ?? "Unknown error")
+      };
     }
-    return {
-      updated: false,
-      count: existing.length,
-      updatedAt: state[CONFIG.storageKeys.updatedAt] ?? "",
-      error: String(error?.message ?? error)
-    };
   }
 };
 
 const ensureMainWorldScript = async () => {
   try {
-    const existing = await chrome.scripting.getRegisteredContentScripts();
-    if (existing?.some((s) => s?.id === CONFIG.mainWorldScriptId)) return;
-
+    const scripts = await chrome.scripting.getRegisteredContentScripts();
+    if (scripts?.some((s) => s?.id === config.mainWorldScriptId)) return;
     await chrome.scripting.registerContentScripts([
       {
-        id: CONFIG.mainWorldScriptId,
+        id: config.mainWorldScriptId,
         matches: ["https://www.youtube.com/*"],
         js: ["injected.js"],
         runAt: "document_start",
@@ -150,10 +142,16 @@ const ensureMainWorldScript = async () => {
   }
 };
 
+const ensureRefreshAlarm = () =>
+  chrome.alarms.create(config.refreshAlarm.name, {
+    periodInMinutes: config.refreshAlarm.periodMinutes,
+    delayInMinutes: config.refreshAlarm.initialDelayMinutes
+  });
+
 chrome.runtime.onInstalled.addListener(async () => {
-  createAlarm();
+  ensureRefreshAlarm();
   await ensureMainWorldScript();
-  await updateBlocklist({ force: true });
+  await updateBlocklist({ forceFetch: true });
 });
 
 chrome.runtime.onStartup?.addListener?.(async () => {
@@ -161,35 +159,24 @@ chrome.runtime.onStartup?.addListener?.(async () => {
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm?.name !== CONFIG.alarmName) return;
-  await updateBlocklist({ force: true });
+  if (alarm?.name !== config.refreshAlarm.name) return;
+  await updateBlocklist({ forceFetch: true });
+});
+
+const messageHandlers = Object.freeze({
+  [config.messageTypes.updateBlocklist]: async () => updateBlocklist({ forceFetch: true }),
+  [config.messageTypes.getStatus]: async () => {
+    const state = await readState();
+    return { count: state.channels.length, updatedAt: state.updatedAt, error: state.error };
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const type = message?.type ?? "";
-  const respond = (payload) => {
-    sendResponse(payload);
-    return undefined;
-  };
-
-  if (type === "selloutshield:updateBlocklist") {
-    updateBlocklist({ force: true }).then(respond);
-    return true;
-  }
-
-  if (type === "selloutshield:getStatus") {
-    readState().then((state) => {
-      const channels = asArray(state[CONFIG.storageKeys.blockedChannels]);
-      respond({
-        count: channels.length,
-        updatedAt: state[CONFIG.storageKeys.updatedAt] ?? "",
-        error: state[CONFIG.storageKeys.lastError] ?? ""
-      });
-    });
-    return true;
-  }
-
-  return false;
+  const handler = messageHandlers[type];
+  if (!handler) return false;
+  handler().then(sendResponse);
+  return true;
 });
 
 

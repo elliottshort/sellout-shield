@@ -4,17 +4,16 @@
   if (window.__selloutshieldInjectedV2) return;
   window.__selloutshieldInjectedV2 = true;
 
-  const has = Object.prototype.hasOwnProperty;
+  const hasOwn = Object.prototype.hasOwnProperty;
 
-  const CONFIG = Object.freeze({
+  const config = Object.freeze({
     fromContent: "SELLOUTSHIELD_CONTENT",
     fromPage: "SELLOUTSHIELD_PAGE",
-    storageMessageType: "storageData",
-    readyMessageType: "ready",
+    messageTypes: Object.freeze({ storageData: "storageData", ready: "ready", playerBlocked: "playerBlocked" }),
     cacheKey: "selloutshield:blocktubeCache:v1"
   });
 
-  const attempt = (fn, fallback = undefined) => {
+  const safeCall = (fn, fallback = undefined) => {
     try {
       return fn();
     } catch {
@@ -22,155 +21,79 @@
     }
   };
 
-  function defineProperty(chain, cValue, middleware = undefined) {
-    let aborted = false;
-    const mustAbort = function (v) {
-      if (aborted) return true;
-      aborted =
-        v !== undefined &&
-        v !== null &&
-        cValue !== undefined &&
-        cValue !== null &&
-        typeof v !== typeof cValue;
-      return aborted;
-    };
-
-    const trapProp = function (owner, prop, configurable, handler) {
-      if (handler.init(owner[prop]) === false) return;
-      const odesc = Object.getOwnPropertyDescriptor(owner, prop);
-      let prevGetter, prevSetter;
-      if (odesc instanceof Object) {
-        if (odesc.configurable === false) return;
-        if (odesc.get instanceof Function) prevGetter = odesc.get;
-        if (odesc.set instanceof Function) prevSetter = odesc.set;
-      }
-      Object.defineProperty(owner, prop, {
-        configurable,
-        get() {
-          if (prevGetter !== undefined) prevGetter();
-          return handler.getter();
-        },
-        set(a) {
-          if (prevSetter !== undefined) prevSetter(a);
-          handler.setter(a);
-        }
-      });
-    };
-
-    const trapChain = function (owner, chain_) {
-      const pos = chain_.indexOf(".");
-      if (pos === -1) {
-        trapProp(owner, chain_, true, {
-          v: undefined,
-          init: function (v) {
-            if (mustAbort(v)) return false;
-            this.v = v;
-            return true;
-          },
-          getter: function () {
-            return cValue;
-          },
-          setter: function (a) {
-            if (middleware instanceof Function) {
-              cValue = a;
-              middleware(a);
-            } else {
-              if (mustAbort(a) === false) return;
-              cValue = a;
-            }
-          }
-        });
-        return;
-      }
-      const prop = chain_.slice(0, pos);
-      const v = owner[prop];
-      const nextChain = chain_.slice(pos + 1);
-      if (v instanceof Object || (typeof v === "object" && v !== null)) {
-        trapChain(v, nextChain);
-        return;
-      }
-      trapProp(owner, prop, true, {
-        v: undefined,
-        init: function (vv) {
-          this.v = vv;
-          return true;
-        },
-        getter: function () {
-          return this.v;
-        },
-        setter: function (a) {
-          this.v = a;
-          if (a instanceof Object) trapChain(a, nextChain);
-        }
-      });
-    };
-
-    trapChain(window, chain);
-  }
-
-  function flattenRuns(arr) {
-    if (!arr) return "";
-    if (arr.simpleText !== undefined) return String(arr.simpleText ?? "");
-    if (!(arr.runs instanceof Array)) return String(arr ?? "");
-    return arr.runs
-      .reduce((res, v) => {
-        if (has.call(v, "text")) res.push(v.text);
-        return res;
+  const flattenRuns = (value) => {
+    if (value === null || value === undefined) return "";
+    if (value && typeof value === "object" && value.simpleText !== undefined) return String(value.simpleText ?? "");
+    if (!value || !Array.isArray(value.runs)) return String(value ?? "");
+    return value.runs
+      .reduce((out, part) => {
+        if (part && hasOwn.call(part, "text")) out.push(part.text);
+        return out;
       }, [])
       .join(" ");
-  }
+  };
 
-  function getObjectByPath(obj, path, def = undefined) {
-    const paths = path instanceof Array ? path : String(path).split(".");
-    let nextObj = obj;
+  const parsePathSegments = (path) => {
+    const raw = String(path ?? "");
+    if (!raw) return [];
+    return raw.split(".").filter(Boolean);
+  };
 
-    const exist = paths.every((v) => {
-      if (/\[.*\]/.test(v)) {
-        const baseMatch = v.match(/^([^\[]+)/);
-        const idxMatches = [...v.matchAll(/\[(\d+)\]/g)].map((m) => parseInt(m[1], 10));
+  const parseSegment = (segment) => {
+    const s = String(segment ?? "");
+    const baseMatch = s.match(/^([^\[]+)/);
+    const key = baseMatch?.[1] ?? "";
+    const indices = [...s.matchAll(/\[(\d+)\]/g)].map((m) => Number.parseInt(m[1], 10)).filter(Number.isFinite);
+    return { key, indices };
+  };
 
-        if (baseMatch && baseMatch[1]) {
-          const key = baseMatch[1];
-          if (!nextObj || !has.call(nextObj, key)) return false;
-          nextObj = nextObj[key];
+  const getByPath = (root, path, fallback = undefined) => {
+    const segments = Array.isArray(path) ? path : parsePathSegments(path);
+    let current = root;
+
+    for (const seg of segments) {
+      if (current === null || current === undefined) return fallback;
+
+      const { key, indices } = parseSegment(seg);
+      if (!key && indices.length === 0) return fallback;
+
+      if (key) {
+        if (Array.isArray(current)) {
+          const found = current.find((o) => o && typeof o === "object" && hasOwn.call(o, key));
+          if (found === undefined) return fallback;
+          current = found[key];
+        } else {
+          if (!current || !hasOwn.call(current, key)) return fallback;
+          current = current[key];
         }
-        for (let k = 0; k < idxMatches.length; k += 1) {
-          const idx = idxMatches[k];
-          if (!Array.isArray(nextObj) || idx < 0 || idx >= nextObj.length) return false;
-          nextObj = nextObj[idx];
-        }
-        return true;
       }
 
-      if (nextObj instanceof Array) {
-        const found = nextObj.find((o) => o && typeof o === "object" && has.call(o, v));
-        if (found === undefined) return false;
-        nextObj = found[v];
-      } else {
-        if (!nextObj || !has.call(nextObj, v)) return false;
-        nextObj = nextObj[v];
+      if (indices.length) {
+        for (const idx of indices) {
+          if (!Array.isArray(current) || idx < 0 || idx >= current.length) return fallback;
+          current = current[idx];
+        }
       }
-      return true;
-    });
+    }
 
-    return exist ? nextObj : def;
-  }
+    return current === undefined ? fallback : current;
+  };
 
-  function getFlattenByPath(obj, filterPath) {
-    if (filterPath === undefined) return undefined;
-    const filterPathArr = filterPath instanceof Array ? filterPath : [filterPath];
-    for (let idx = 0; idx < filterPathArr.length; idx += 1) {
-      const value = getObjectByPath(obj, filterPathArr[idx]);
+  const getTextByPath = (obj, pathSpec) => {
+    if (pathSpec === undefined) return undefined;
+    const paths = Array.isArray(pathSpec) ? pathSpec : [pathSpec];
+    for (const p of paths) {
+      const value = getByPath(obj, p);
       if (value !== undefined) return flattenRuns(value);
     }
     return undefined;
-  }
+  };
 
-  const regexProps = ["channelId", "channelName"];
+  const regexKeys = Object.freeze(["channelId", "channelName"]);
 
-  let storageData;
+  let compiledRules;
 
-  function compileRegExpList(values) {
+  function compilePatternList(values) {
     const arr = Array.isArray(values) ? values : [];
     const out = [];
     for (const v of arr) {
@@ -183,44 +106,153 @@
           out.push(RegExp(v[0], String(v[1] ?? "").replace("g", "")));
           continue;
         }
-        if (typeof v === "string") {
-          out.push(RegExp(`^${v}$`, ""));
-        }
+        if (typeof v === "string") out.push(RegExp(`^${v}$`, ""));
       } catch {
       }
     }
     return out;
   }
 
-  function compileStorageData(data) {
+  function compileIncomingRules(data) {
     const filterData = data && typeof data === "object" ? data.filterData : undefined;
     const options = data && typeof data === "object" ? data.options : undefined;
-    const compiled = {
+    return {
       filterData: {
-        channelId: compileRegExpList(filterData?.channelId),
-        channelName: compileRegExpList(filterData?.channelName)
+        channelId: compilePatternList(filterData?.channelId),
+        channelName: compilePatternList(filterData?.channelName)
       },
       options: options && typeof options === "object" ? options : {}
     };
-    return compiled;
   }
 
-  function storageReceived(data) {
-    if (!data) {
-      storageData = undefined;
-      return;
-    }
+  function isRulesEmpty() {
+    if (!compiledRules || !compiledRules.filterData) return true;
+    return regexKeys.every((k) => !Array.isArray(compiledRules.filterData[k]) || compiledRules.filterData[k].length === 0);
+  }
+
+  function trapProperty(chain, value, onChange = undefined) {
+    let aborted = false;
+
+    const abortIfTypeMismatch = (next) => {
+      if (aborted) return true;
+      aborted =
+        next !== undefined &&
+        next !== null &&
+        value !== undefined &&
+        value !== null &&
+        typeof next !== typeof value;
+      return aborted;
+    };
+
+    const defineTrap = (owner, prop, configurable, handler) => {
+      if (handler.init(owner[prop]) === false) return;
+
+      const desc = Object.getOwnPropertyDescriptor(owner, prop);
+      let prevGet;
+      let prevSet;
+
+      if (desc && typeof desc === "object") {
+        if (desc.configurable === false) return;
+        if (typeof desc.get === "function") prevGet = desc.get;
+        if (typeof desc.set === "function") prevSet = desc.set;
+      }
+
+      Object.defineProperty(owner, prop, {
+        configurable,
+        get() {
+          if (prevGet) prevGet();
+          return handler.getter();
+        },
+        set(next) {
+          if (prevSet) prevSet(next);
+          handler.setter(next);
+        }
+      });
+    };
+
+    const trapChain = (owner, chainPath) => {
+      const dot = chainPath.indexOf(".");
+      if (dot === -1) {
+        defineTrap(owner, chainPath, true, {
+          stored: undefined,
+          init(next) {
+            if (abortIfTypeMismatch(next)) return false;
+            this.stored = next;
+            return true;
+          },
+          getter() {
+            return value;
+          },
+          setter(next) {
+            if (typeof onChange === "function") {
+              value = next;
+              onChange(next);
+              return;
+            }
+            if (abortIfTypeMismatch(next) === false) return;
+            value = next;
+          }
+        });
+        return;
+      }
+
+      const prop = chainPath.slice(0, dot);
+      const nextChain = chainPath.slice(dot + 1);
+      const existing = owner[prop];
+
+      if (existing && typeof existing === "object") {
+        trapChain(existing, nextChain);
+        return;
+      }
+
+      defineTrap(owner, prop, true, {
+        stored: undefined,
+        init(next) {
+          this.stored = next;
+          return true;
+        },
+        getter() {
+          return this.stored;
+        },
+        setter(next) {
+          this.stored = next;
+          if (next && typeof next === "object") trapChain(next, nextChain);
+        }
+      });
+    };
+
+    trapChain(window, chain);
+  }
+
+  function disableEmbedPlayer() {
+    return true;
+  }
+
+  function disablePlayer(ytData) {
     try {
-      storageData = compileStorageData(data);
-      startHook();
-      window.dispatchEvent(new Event("selloutShieldReady"));
-    } catch {
-    }
-  }
+      const message = String(compiledRules?.options?.block_message || "Blocked by SelloutShield");
 
-  function isDataEmpty() {
-    if (!storageData || !storageData.filterData) return true;
-    return regexProps.every((p) => !Array.isArray(storageData.filterData[p]) || storageData.filterData[p].length === 0);
+      safeCall(() => {
+        const channelId = String(ytData?.videoDetails?.channelId ?? "");
+        const channelName = String(ytData?.videoDetails?.author ?? "");
+        window.postMessage(
+          { from: config.fromPage, type: config.messageTypes.playerBlocked, data: { channelId, channelName, message } },
+          document.location.origin
+        );
+      });
+
+      for (const prop of Object.getOwnPropertyNames(ytData)) safeCall(() => delete ytData[prop]);
+
+      ytData.playabilityStatus = {
+        status: "ERROR",
+        reason: message,
+        errorScreen: { playerErrorMessageRenderer: { reason: { simpleText: message }, icon: { iconType: "ERROR_OUTLINE" } } }
+      };
+
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   const baseRules = Object.freeze({
@@ -303,7 +335,7 @@
     }
   });
 
-  const deleteAllowed = [
+  const deleteAllowed = Object.freeze([
     "richItemRenderer",
     "content",
     "horizontalListRenderer",
@@ -314,149 +346,85 @@
     "expandedShelfContentsRenderer",
     "reelShelfRenderer",
     "richSectionRenderer"
-  ];
+  ]);
 
-  function matchFilterData(filters, obj, objectType) {
-    if (isDataEmpty()) return false;
-    if (!filters || typeof filters !== "object") return false;
+  function matchesAnyRule(properties, node) {
+    if (isRulesEmpty()) return false;
+    if (!properties || typeof properties !== "object") return false;
 
-    const rules = has.call(filters, "properties") ? filters.properties : filters;
+    const rules = hasOwn.call(properties, "properties") ? properties.properties : properties;
 
-    return Object.keys(rules).some((h) => {
-      const filterPath = rules[h];
-      if (filterPath === undefined) return false;
-      if (!regexProps.includes(h)) return false;
+    return Object.keys(rules).some((key) => {
+      const pathSpec = rules[key];
+      if (pathSpec === undefined) return false;
+      if (!regexKeys.includes(key)) return false;
 
-      const patterns = storageData?.filterData?.[h];
+      const patterns = compiledRules?.filterData?.[key];
       if (!Array.isArray(patterns) || patterns.length === 0) return false;
 
-      const value = getFlattenByPath(obj, filterPath);
-      if (value === undefined) return false;
+      const text = getTextByPath(node, pathSpec);
+      if (text === undefined) return false;
 
-      try {
-        return patterns.some((re) => re && re.test(String(value)));
-      } catch {
-        return false;
-      }
+      return safeCall(() => patterns.some((re) => re && re.test(String(text))), false);
     });
   }
 
-  function matchFilterRule(obj, filterRules_) {
-    if (isDataEmpty()) return [];
-    return Object.keys(filterRules_).reduce((res, h) => {
-      let properties;
-      let customFunc;
-      const filteredObject = obj[h];
-      if (!filteredObject) return res;
+  function matchedKeysForRuleSet(node, ruleSet) {
+    if (isRulesEmpty()) return [];
+    return Object.keys(ruleSet).reduce((out, key) => {
+      const target = node[key];
+      if (!target) return out;
 
-      const filterRule = filterRules_[h];
-      if (filterRule && typeof filterRule === "object" && has.call(filterRule, "properties")) {
-        properties = filterRule.properties;
-        customFunc = filterRule.customFunc;
-      } else {
-        properties = filterRule;
-        customFunc = undefined;
-      }
+      const rule = ruleSet[key];
+      const properties = rule && typeof rule === "object" && hasOwn.call(rule, "properties") ? rule.properties : rule;
+      const customFunc = rule && typeof rule === "object" && hasOwn.call(rule, "properties") ? rule.customFunc : undefined;
 
-      const isMatch = matchFilterData(properties, filteredObject, h);
-      if (isMatch) res.push({ name: h, customFunc });
-      return res;
+      if (matchesAnyRule(properties, target)) out.push({ key, customFunc });
+      return out;
     }, []);
   }
 
-  function filterObjectWithRules(obj, filterRules_) {
-    let deletePrev = false;
-    if (typeof obj !== "object" || obj === null) return deletePrev;
+  function filterTreeInPlace(node, ruleSet) {
+    let deletedSomething = false;
+    if (!node || typeof node !== "object") return deletedSomething;
 
-    const matchedRules = matchFilterRule(obj, filterRules_);
-    matchedRules.forEach((r) => {
-      let customRet = true;
-      if (r.customFunc !== undefined) customRet = r.customFunc(obj, r.name);
-      if (customRet) {
-        try {
-          delete obj[r.name];
-        } catch {
-        }
-        deletePrev = true;
-      }
-    });
-
-    let len = 0;
-    let keys;
-    if (obj instanceof Array) {
-      len = obj.length;
-    } else {
-      keys = Object.keys(obj);
-      len = keys.length;
+    const matched = matchedKeysForRuleSet(node, ruleSet);
+    for (const m of matched) {
+      const shouldDelete = m.customFunc ? m.customFunc(node, m.key) : true;
+      if (!shouldDelete) continue;
+      safeCall(() => delete node[m.key]);
+      deletedSomething = true;
     }
+
+    const isArray = Array.isArray(node);
+    const keys = isArray ? null : Object.keys(node);
+    const len = isArray ? node.length : keys.length;
 
     for (let i = len - 1; i >= 0; i -= 1) {
-      const idx = keys ? keys[i] : i;
-      if (obj[idx] === undefined) continue;
-      const childDel = filterObjectWithRules(obj[idx], filterRules_);
-      if (childDel && keys === undefined) {
-        deletePrev = true;
-        obj.splice(idx, 1);
+      const key = keys ? keys[i] : i;
+      if (node[key] === undefined) continue;
+
+      const childDeleted = filterTreeInPlace(node[key], ruleSet);
+
+      if (childDeleted && !keys) {
+        node.splice(key, 1);
+        deletedSomething = true;
+        continue;
       }
-      if (obj[idx] instanceof Array && obj[idx].length === 0 && childDel) {
-        deletePrev = true;
-      } else if (childDel && deleteAllowed.includes(idx)) {
-        try {
-          delete obj[idx];
-        } catch {
-        }
-        deletePrev = true;
+
+      const child = node[key];
+      if (Array.isArray(child) && child.length === 0 && childDeleted) deletedSomething = true;
+      else if (childDeleted && deleteAllowed.includes(key)) {
+        safeCall(() => delete node[key]);
+        deletedSomething = true;
       }
     }
-    return deletePrev;
+
+    return deletedSomething;
   }
 
-  function filterObject(obj, rules) {
-    return attempt(() => (filterObjectWithRules(obj, rules), obj), obj);
-  }
-
-  function disableEmbedPlayer() {
-    return true;
-  }
-
-  function disablePlayer(ytData) {
-    try {
-      const message = (storageData?.options?.block_message || "Blocked by SelloutShield") + "";
-
-      try {
-        const channelId = String(ytData?.videoDetails?.channelId ?? "");
-        const channelName = String(ytData?.videoDetails?.author ?? "");
-        window.postMessage(
-          {
-            from: CONFIG.fromPage,
-            type: "playerBlocked",
-            data: { channelId, channelName, message }
-          },
-          document.location.origin
-        );
-      } catch {
-      }
-
-      for (const prop of Object.getOwnPropertyNames(ytData)) {
-        try {
-          delete ytData[prop];
-        } catch {
-        }
-      }
-      ytData.playabilityStatus = {
-        status: "ERROR",
-        reason: message,
-        errorScreen: {
-          playerErrorMessageRenderer: {
-            reason: { simpleText: message },
-            icon: { iconType: "ERROR_OUTLINE" }
-          }
-        }
-      };
-      return false;
-    } catch {
-      return false;
-    }
+  function filterObject(obj, ruleSet) {
+    return safeCall(() => (filterTreeInPlace(obj, ruleSet), obj), obj);
   }
 
   function filterInitialData(v) {
@@ -471,21 +439,17 @@
     return filterObject(v, filterRules.ytPlayer);
   }
 
-  function startHook() {
+  function startHooks() {
     const trap = (chain, filterFn) => {
-      try {
-        const existing = getObjectByPath(window, chain);
+      safeCall(() => {
+        const existing = getByPath(window, chain);
         if (existing !== undefined) {
-          defineProperty(chain, existing, (v) => filterFn(v));
+          trapProperty(chain, existing, (v) => filterFn(v));
           if (existing && typeof existing === "object") filterFn(existing);
           return;
         }
-      } catch {
-      }
-      try {
-        defineProperty(chain, undefined, (v) => filterFn(v));
-      } catch {
-      }
+        trapProperty(chain, undefined, (v) => filterFn(v));
+      });
     };
 
     trap("ytInitialData", filterInitialData);
@@ -493,6 +457,18 @@
     trap("ytInitialPlayerResponse", filterPlayerResponse);
     trap("ytplayer.config", filterPlayerResponse);
     trap("yt.config_", filterPlayerResponse);
+  }
+
+  function onRulesReceived(data) {
+    if (!data) {
+      compiledRules = undefined;
+      return;
+    }
+    safeCall(() => {
+      compiledRules = compileIncomingRules(data);
+      startHooks();
+      window.dispatchEvent(new Event("selloutShieldReady"));
+    });
   }
 
   function shouldProcessUrl(url) {
@@ -506,9 +482,9 @@
     );
   }
 
-  function applyFilterForUrl(urlString_, json) {
-    try {
-      const url = new URL(String(urlString_ ?? ""), document.location.origin);
+  function applyFilterForUrl(urlString, json) {
+    safeCall(() => {
+      const url = new URL(String(urlString ?? ""), document.location.origin);
       switch (url.pathname) {
         case "/youtubei/v1/search":
         case "/youtubei/v1/browse":
@@ -524,115 +500,91 @@
         default:
           break;
       }
-    } catch {
-    }
+    });
     return json;
   }
 
   function urlString(input) {
-    try {
+    return safeCall(() => {
       if (typeof input === "string") return input;
       if (input && typeof input === "object" && "url" in input) return String(input.url ?? "");
       return "";
-    } catch {
-      return "";
-    }
+    }, "");
   }
 
   function patchFetch() {
-    let original;
-    try {
-      if (typeof window.fetch !== "function") return;
-      original = window.fetch.bind(window);
-    } catch {
-      return;
-    }
+    const original = safeCall(() => (typeof window.fetch === "function" ? window.fetch.bind(window) : null), null);
+    if (!original) return;
 
     const wrapped = async (...args) => {
       const res = await original(...args);
-      try {
+      return safeCall(() => {
+        if (isRulesEmpty()) return res;
         const url = urlString(args[0]);
         if (!shouldProcessUrl(url)) return res;
+
         const ct = res.headers.get("content-type") ?? "";
         if (!ct.includes("json")) return res;
-        const cloned = res.clone();
-        const data = await cloned.json();
-        const filtered = applyFilterForUrl(url, data);
-        const body = JSON.stringify(filtered);
-        const headers = new Headers(res.headers);
-        headers.set("content-length", String(body.length));
-        return new Response(body, {
-          status: res.status,
-          statusText: res.statusText,
-          headers
-        });
-      } catch {
-        return res;
-      }
+
+        return res
+          .clone()
+          .json()
+          .then((data) => {
+            const filtered = applyFilterForUrl(url, data);
+            const body = JSON.stringify(filtered);
+            const headers = new Headers(res.headers);
+            headers.delete("content-length");
+            return new Response(body, { status: res.status, statusText: res.statusText, headers });
+          })
+          .catch(() => res);
+      }, res);
     };
 
-    try {
+    safeCall(() => {
       const desc = Object.getOwnPropertyDescriptor(window, "fetch");
       if (!desc) {
-        Object.defineProperty(window, "fetch", {
-          configurable: true,
-          enumerable: true,
-          writable: true,
-          value: wrapped
-        });
+        Object.defineProperty(window, "fetch", { configurable: true, enumerable: true, writable: true, value: wrapped });
         return;
       }
-
       if (desc.writable) {
         window.fetch = wrapped;
         return;
       }
-
-      if (desc.configurable) {
-        Object.defineProperty(window, "fetch", { ...desc, value: wrapped });
-        return;
-      }
-    } catch {
-    }
+      if (desc.configurable) Object.defineProperty(window, "fetch", { ...desc, value: wrapped });
+    });
   }
 
   function patchXhr() {
     if (!window.XMLHttpRequest) return;
+
     const open = window.XMLHttpRequest.prototype.open;
     const send = window.XMLHttpRequest.prototype.send;
+
     window.XMLHttpRequest.prototype.open = function (...args) {
-      try {
-        this.__selloutshieldUrl = String(args?.[1] ?? "");
-      } catch {
-        this.__selloutshieldUrl = "";
-      }
+      this.__selloutshieldUrl = safeCall(() => String(args?.[1] ?? ""), "");
       return open.apply(this, args);
     };
+
     window.XMLHttpRequest.prototype.send = function (...args) {
       const url = this.__selloutshieldUrl ?? "";
-      if (!shouldProcessUrl(url)) return send.apply(this, args);
+      if (isRulesEmpty() || !shouldProcessUrl(url)) return send.apply(this, args);
 
       const patch = () => {
-        try {
+        safeCall(() => {
           if (this.readyState !== 4) return;
           if (this.status < 200 || this.status >= 300) return;
           const type = this.responseType;
           if (type && type !== "" && type !== "text") return;
           const text = this.responseText;
           if (typeof text !== "string" || !text) return;
+
           const parsed = JSON.parse(text);
           const filtered = applyFilterForUrl(url, parsed);
           const nextText = JSON.stringify(filtered);
-          try {
-            Object.defineProperty(this, "responseText", { configurable: true, get: () => nextText });
-          } catch {
-          }
-          try {
-            Object.defineProperty(this, "response", { configurable: true, get: () => nextText });
-          } catch {
-          }
-        } catch {
-        }
+
+          safeCall(() => Object.defineProperty(this, "responseText", { configurable: true, get: () => nextText }));
+          safeCall(() => Object.defineProperty(this, "response", { configurable: true, get: () => nextText }));
+        });
       };
 
       this.addEventListener("readystatechange", patch);
@@ -640,37 +592,33 @@
     };
   }
 
-  function loadCachedStorage() {
-    try {
-      const raw = localStorage.getItem(CONFIG.cacheKey);
+  function loadCachedRules() {
+    safeCall(() => {
+      const raw = localStorage.getItem(config.cacheKey);
       if (!raw) return;
-      const parsed = JSON.parse(raw);
-      storageReceived(parsed);
-    } catch {
-    }
+      onRulesReceived(JSON.parse(raw));
+    });
   }
 
   function onMessage(event) {
-    try {
+    safeCall(() => {
       if (event?.source !== window) return;
       const data = event?.data;
       if (!data || typeof data !== "object") return;
-      if (data.from !== CONFIG.fromContent) return;
-      if (data.type !== CONFIG.storageMessageType) return;
-      storageReceived(data.data);
-    } catch {
-    }
+      if (data.from !== config.fromContent) return;
+      if (data.type !== config.messageTypes.storageData) return;
+      onRulesReceived(data.data);
+    });
   }
 
-  loadCachedStorage();
+  loadCachedRules();
   window.addEventListener("message", onMessage, true);
   patchFetch();
   patchXhr();
 
-  try {
-    window.postMessage({ from: CONFIG.fromPage, type: CONFIG.readyMessageType }, document.location.origin);
-  } catch {
-  }
+  safeCall(() => {
+    window.postMessage({ from: config.fromPage, type: config.messageTypes.ready }, document.location.origin);
+  });
 })();
 
 
